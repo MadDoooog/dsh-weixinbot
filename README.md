@@ -128,6 +128,24 @@ dsh web        # 或 dsh --profile <name>
 - 凭据/游标/代次/会话映射持久化：`$DSH_HOME/weixinbot/`（credentials.json 0600、cursor.json、session-map.json、media/）。
 - 掉线检测（`errcode=-14` / 401）→ 日志与健康检查标记，重新扫码即可恢复。
 
+## 运维
+
+- **重启**：dsh web 是 systemd 用户服务，`systemctl --user restart dsh-web`（不要用 PID）
+- **联网搜索**：微信 agent 的 `web_search` 工具由 `@deepseek-ai/dsh-tool-web` 提供，
+  dsh-web-app 默认禁用；在 profile 的 `cordis.patch.yml` 按 id 覆盖启用：
+
+  ```yaml
+  - id: tool-web
+    name: '@deepseek-ai/dsh-tool-web'
+    disabled: false
+    config:
+      fetch: false
+      searchTimeoutMs: 60000
+  ```
+
+- **启动通知**：`notifyOnStart: true` 时插件每次启动向绑定者微信推送「启动好了」（进程级去重）
+- 健康检查：`curl http://127.0.0.1:3901/health`；日志：`journalctl --user -u dsh-web`
+
 ## 参考
 
 - [功能设计](./docs/功能设计.md)
