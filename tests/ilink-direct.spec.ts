@@ -9,7 +9,7 @@ import { createCipheriv } from 'node:crypto'
 import type { AddressInfo } from 'node:net'
 import { ILinkDirectAdapter } from '../src/adapter/ilink-direct.js'
 import type { InboundMessage } from '../src/adapter/channel.js'
-import { ilinkHeaders, randomUin, chunkText } from '../src/util.js'
+import { ilinkHeaders, randomUin, chunkText, beijingTime } from '../src/util.js'
 
 /** 记录发送请求，供断言。 */
 const sentBodies: any[] = []
@@ -288,5 +288,10 @@ describe('util', () => {
     const chunks = chunkText(long, 3500)
     expect(chunks.length).toBeGreaterThan(1)
     expect(chunks.join('')).toBe(long)
+  })
+
+  it('beijingTime 输出北京时间（UTC+8）', () => {
+    const t = beijingTime(new Date('2026-08-14T11:36:10.000Z'))
+    expect(t).toBe('2026-08-14 19:36:10')
   })
 })

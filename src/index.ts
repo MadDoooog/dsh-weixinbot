@@ -11,7 +11,7 @@ import type { Context } from '@deepseek-ai/cordis'
 // 激活 dsh-agent-default-model 对 Context 的类型扩展（ctx.agentDefaultModel）
 import type {} from '@deepseek-ai/dsh-agent-default-model'
 import { normalizeConfig, type Config } from './config.js'
-import { fileLog, formatError, setLogFile, type Logger } from './util.js'
+import { beijingTime, fileLog, formatError, setLogFile, type Logger } from './util.js'
 import { loadCredentials, loadCursor, saveCursor } from './credentials.js'
 import { ILinkDirectAdapter } from './adapter/ilink-direct.js'
 import { Bridge } from './bridge/bridge.js'
@@ -129,7 +129,7 @@ export function apply(ctx: Context, config: Config = {} as Config): () => Promis
   if (cfg.notifyOnStart && ownerUserId && adapter.isLoggedIn() && !notifiedStart) {
     notifiedStart = true
     adapter
-      .send(ownerUserId, '', `✅ dsh-weixinbot 已启动（${new Date().toISOString()}）`)
+      .send(ownerUserId, '', `✅ dsh-weixinbot 已启动（北京时间 ${beijingTime()}）`)
       .then(() => logger.info('已推送启动通知到 %s', ownerUserId))
       .catch((e) => logger.warn('启动通知发送失败: %s', formatError(e)))
   }

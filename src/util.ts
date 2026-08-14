@@ -34,6 +34,11 @@ export function randomUin(): string {
   return Buffer.from(String(n), 'utf8').toString('base64')
 }
 
+/** 北京时间（UTC+8，Asia/Shanghai 无夏令时）格式化为 `YYYY-MM-DD HH:mm:ss`。 */
+export function beijingTime(date: Date = new Date()): string {
+  return new Date(date.getTime() + 8 * 3600 * 1000).toISOString().replace('T', ' ').slice(0, 19)
+}
+
 export interface FetchJsonOptions {
   method?: string
   headers?: Record<string, string>

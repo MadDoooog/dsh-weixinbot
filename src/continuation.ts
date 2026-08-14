@@ -79,9 +79,10 @@ export async function maybeInjectContinuation(
   if (options?.model) agentOptions.model = options.model
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    // 1) 优先 resume（从磁盘恢复持久会话）
+    let handle: Awaited<ReturnType<Context['agents']['resume']>> | undefined
     try {
-      // 1) 优先 resume（从磁盘恢复持久会话）
-      const handle = await ctx.agents.resume({ resumeSessionId: SessionId(pending.sessionId), agentOptions })
+      handle = await ctx.agents.resume({ resumeSessionId: SessionId(pending.sessionId), agentOptions })
       handle.agent.followup(userMessage)
       await Promise.race([handle.agent.whenIdle(), sleep(TURN_TIMEOUT_MS)])
       clearPendingContinuation(home)
@@ -111,9 +112,21 @@ export async function maybeInjectContinuation(
         fileLog('continuation-fail', 'session=' + pending.sessionId + ' err=' + err)
         return false
       }
-      logger.warn('[continuation] 注入续跑重试 %d/%d: %s', attempt, MAX_ATTEMPTS, err)
-      await sleep(RETRY_MS)
+    } finally {
+      // 关键：释放会话所有权。若不 dispose，插件会一直占着该会话，
+      // web 应用无法接管，宿主工具（bash/read/write 等）无法挂载，
+      // 后续所有正常消息都会变成工具受限的「裸 agent」回合。
+      if (handle) {
+        try {
+          await handle.dispose()
+          fileLog('continuation', 'disposed session=' + pending.sessionId)
+        } catch (e3) {
+          fileLog('continuation', 'dispose fail session=' + pending.sessionId + ' err=' + formatError(e3))
+        }
+      }
     }
+    logger.warn('[continuation] 注入续跑重试 %d/%d', attempt, MAX_ATTEMPTS)
+    await sleep(RETRY_MS)
   }
   return false
 }
