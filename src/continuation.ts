@@ -63,7 +63,13 @@ export async function maybeInjectContinuation(
   const pending = readPendingContinuation(home)
   if (!pending) return false
 
-  const text = `（重启完成通知）DSH 已重启并恢复健康。请继续执行重启前的待办：${pending.message}`
+  // 注意：续跑回合由插件经 ctx.agents.resume 唤醒，只挂载 dsh 工具
+  // （web_search 等），没有 bash/文件等宿主工具；重活移交用户下一条消息。
+  const text =
+    `（重启完成通知）DSH 已重启并恢复健康。` +
+    `本回合工具受限：可用 dsh 工具（如 web_search），无 bash/文件等宿主工具；` +
+    `请完成可用工具能做的验证并向用户汇报，需要 bash 的重活等用户下一条消息再继续。` +
+    `重启前待办：${pending.message}`
   const userMessage = createUserMessage({
     content: [{ type: 'text', text }],
     source: { kind: 'user' },

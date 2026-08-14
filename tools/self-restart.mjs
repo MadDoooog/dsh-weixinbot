@@ -68,11 +68,13 @@ function main() {
   }
   const claude = path.join(os.homedir(), '.local', 'bin', 'claude')
   const logFile = path.join(home, 'weixinbot', 'restart-log.txt')
-  const cmd =
-    `systemd-run --user --unit=dsh-weixinbot-restart --collect /bin/bash -c ` +
-    `'${claude} -p --dangerously-skip-permissions < ${promptFile} > ${logFile} 2>&1'`
-  console.log(`→ ${cmd}`)
-  const r = spawnSync('systemd-run', cmd.split(' ').slice(1), { stdio: 'inherit', shell: false })
+  const unit = `dsh-weixinbot-restart-${Date.now()}`
+  const script = `${claude} -p --dangerously-skip-permissions < ${promptFile} > ${logFile} 2>&1`
+  console.log(`→ systemd-run --user --unit=${unit} --collect /bin/bash -c "${script}"`)
+  const r = spawnSync('systemd-run', ['--user', `--unit=${unit}`, '--collect', '/bin/bash', '-c', script], {
+    stdio: 'inherit',
+    shell: false,
+  })
   if (r.status !== 0) {
     console.error('✗ systemd-run 启动 claudecode 失败，请手动执行上面的命令')
     process.exit(4)
