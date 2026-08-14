@@ -144,6 +144,14 @@ dsh web        # 或 dsh --profile <name>
   ```
 
 - **启动通知**：`notifyOnStart: true` 时插件每次启动向绑定者微信推送「启动好了」（进程级去重）
+- **agent 自重启 + 续跑**：agent 需要重启自己时，先写续跑标记
+  `$DSH_HOME/weixinbot/pending-continuation.json`（含自己的 `DSH_SESSION_ID` 与待办），
+  再委托 claudecode（`systemd-run --user` 独立 unit，重启不杀它）执行
+  `systemctl --user restart dsh-web`；新实例启动后插件读到标记，向该会话注入
+  「重启完成通知」唤醒 agent 继续待办（成功才删标记，失败保留重试）。
+  辅助脚本：`node tools/self-restart.mjs "<重启后待办>"`。
+  ⚠️ 续跑回合只挂载 dsh 工具（如 web_search），**无 bash/文件等宿主工具**——
+  重活会在用户下一条消息（工具齐全）时继续。
 - 健康检查：`curl http://127.0.0.1:3901/health`；日志：`journalctl --user -u dsh-web`
 
 ## 参考
