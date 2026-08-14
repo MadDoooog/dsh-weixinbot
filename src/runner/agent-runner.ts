@@ -25,6 +25,21 @@ import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
 import { fileLog, formatError, type Logger } from '../util.js'
 
+/** 微信聊天风格提示词（注册为 system-prompt section，order 50：persona 之后、工具指引之前）。 */
+export const WECHAT_CHAT_STYLE_PROMPT = `你是通过微信与用户对话的助手，请遵守微信聊天的阅读习惯：
+1. 回复简洁、口语化，像真人发微信，不要像写报告。
+2. 优先短句与要点：每条一两行，分条列出；不要一次性输出大段文字。
+3. 单条回复尽量控制在 200 字以内；内容确实多时，先给最关键的结论，其余用要点简述，并提示用户可追问展开。
+4. 避免 Markdown 表格、代码块、长链接等微信不适配的排版，用「- 要点」或 emoji 即可。
+5. 先给结论，再给必要依据，不要铺垫和客套。`
+
+/** systemPrompt.section 的最小形状（避免依赖 dsh-system-prompt 类型版本）。 */
+interface SystemPromptSectionHost {
+  systemPrompt?: {
+    section(s: { name: string; order: number; text: string }): unknown
+  }
+}
+
 export interface AgentRunnerConfig {
   /** 专属 agent 的工作目录。 */
   cwd: string
@@ -158,6 +173,22 @@ export class AgentRunner implements MessageRunner {
 
   // ── 内部 ──
 
+  /** 在 agent 的 scoped world 里注册微信聊天风格提示词（create/resume 都执行）。 */
+  private registerChatStyle(agentCtx: Context): void {
+    const host = agentCtx as unknown as SystemPromptSectionHost
+    const sp = host.systemPrompt
+    if (!sp?.section) return
+    try {
+      sp.section({
+        name: 'weixinbot:chat-style',
+        order: 50,
+        text: WECHAT_CHAT_STYLE_PROMPT,
+      })
+    } catch (e) {
+      this.log.warn('注册微信回复风格提示词失败: %s', formatError(e))
+    }
+  }
+
   private ensure(key: string): ConversationRecord {
     let rec = this.registry.get(key)
     if (!rec) {
@@ -241,6 +272,7 @@ export class AgentRunner implements MessageRunner {
       const handle = await this.ctx.agents.resume({
         resumeSessionId: SessionId(sid),
         agentOptions: agentOptions(this.cfg),
+        setup: (agentCtx) => this.registerChatStyle(agentCtx),
       })
       this.log.info('恢复会话 %s', sid)
       fileLog('resume', 'OK session=' + sid)
@@ -310,6 +342,7 @@ export class AgentRunner implements MessageRunner {
       sessionId,
       meta: cwdOk ? { cwd: this.cfg.cwd } : undefined,
       agentOptions: agentOptions(this.cfg),
+      setup: (agentCtx) => this.registerChatStyle(agentCtx),
     })
     this.log.info('创建会话 %s%s', sessionId, cwdOk ? `（cwd=${this.cfg.cwd}）` : '')
     fileLog('create', 'OK session=' + sessionId)
