@@ -76,6 +76,8 @@ export function apply(ctx: Context, config: Config = {} as Config): () => Promis
     pollTimeoutMs: cfg.poll.timeoutMs,
     retryDelayMs: cfg.poll.retryDelayMs,
     rateLimitPer5min: cfg.queue.rateLimitPer5min,
+    mediaDir: cfg.media.dir || path.join(home, 'weixinbot', 'media'),
+    maxBytes: cfg.media.maxBytes,
     cursor: { load: () => loadCursor(home), save: (b) => saveCursor(b, home) },
     logger,
   })

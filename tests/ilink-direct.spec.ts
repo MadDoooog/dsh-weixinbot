@@ -3,6 +3,9 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import http from 'node:http'
+import path from 'node:path'
+import fs from 'node:fs'
+import { createCipheriv } from 'node:crypto'
 import type { AddressInfo } from 'node:net'
 import { ILinkDirectAdapter } from '../src/adapter/ilink-direct.js'
 import type { InboundMessage } from '../src/adapter/channel.js'
@@ -109,6 +112,15 @@ beforeAll(async () => {
       })
       return
     }
+    if (url.pathname === '/cdn/img.bin') {
+      // AES-128-ECB 加密的图片字节（key = 16 字节）
+      const key = Buffer.from('0123456789abcdef', 'utf8')
+      const cipher = createCipheriv('aes-128-ecb', key, null)
+      const enc = Buffer.concat([cipher.update(Buffer.from('fake-jpeg-bytes')), cipher.final()])
+      res.writeHead(200, { 'Content-Type': 'application/octet-stream' })
+      res.end(enc)
+      return
+    }
     json(res, { errcode: 404, errmsg: 'not found' }, 404)
   })
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -128,6 +140,8 @@ function makeAdapter(overrides: Record<string, unknown> = {}) {
     pollTimeoutMs: 1000,
     retryDelayMs: 50,
     rateLimitPer5min: 100,
+    mediaDir: path.join(process.cwd(), 'node_modules', '.tmp-media-test'),
+    maxBytes: 25 * 1024 * 1024,
     cursor: { load: () => '', save: () => {} },
     logger: silentLogger,
     ...overrides,
@@ -229,6 +243,29 @@ describe('ILinkDirectAdapter', () => {
     expect(adapter.isLoggedIn()).toBe(true)
     const s = adapter.status()
     expect(s.loggedIn).toBe(true)
+  })
+
+  it('F8 媒体：下载 CDN 加密图片并解密保存', async () => {
+    const mediaDir = path.join(process.cwd(), 'node_modules', '.tmp-media-test')
+    fs.rmSync(mediaDir, { recursive: true, force: true })
+    const { downloadMediaItem } = await import('../src/adapter/cdn.js')
+    const att = await downloadMediaItem(
+      {
+        type: 2,
+        image_item: {
+          aeskey: Buffer.from('0123456789abcdef', 'utf8').toString('hex'),
+          media: { full_url: `${baseUrl}/cdn/img.bin` },
+        },
+      },
+      mediaDir,
+      25 * 1024 * 1024,
+      silentLogger,
+      1,
+    )
+    expect(att).not.toBeNull()
+    expect(att!.kind).toBe('image')
+    expect(fs.readFileSync(att!.path, 'utf8')).toBe('fake-jpeg-bytes')
+    fs.rmSync(mediaDir, { recursive: true, force: true })
   })
 })
 

@@ -12,7 +12,8 @@
 import { randomBytes } from 'node:crypto'
 import { fetchJson, fileLog, formatError, ilinkHeaders, sleep, type Logger } from '../util.js'
 import { loadCursor, saveCursor } from '../credentials.js'
-import type { ChannelAdapter, InboundMessage, MediaItem } from './channel.js'
+import type { ChannelAdapter, InboundMessage, MediaAttachment } from './channel.js'
+import { downloadMediaItem, type MediaItemRaw } from './cdn.js'
 
 /** 原始 iLink 消息（部分字段，够用即可）。 */
 interface WeixinMessage {
@@ -25,7 +26,7 @@ interface WeixinMessage {
   client_msg_id?: string
   server_msg_id?: string
   create_time_ms?: number
-  item_list?: MediaItem[]
+  item_list?: MediaItemRaw[]
 }
 
 export interface CursorStore {
@@ -38,6 +39,10 @@ export interface ILinkDirectOptions {
   baseUrl: string
   botId?: string
   pollTimeoutMs: number
+  /** F8 媒体保存目录。 */
+  mediaDir: string
+  /** F8 媒体大小上限（字节）。 */
+  maxBytes: number
   retryDelayMs: number
   /** 官方限速约 7 条/5 分钟；本地窗口按 rateLimitPer5min - 1 排队。 */
   rateLimitPer5min: number
@@ -68,6 +73,10 @@ const TYPING_STATUS = { TYPING: 1, CANCEL: 2 } as const
 interface TypingTicketEntry {
   ticket: string
   nextFetchAt: number
+}
+
+function kindLabel(kind: string): string {
+  return { image: '图片', voice: '语音', file: '文件', video: '视频' }[kind] ?? kind
 }
 
 export class ILinkDirectAdapter implements ChannelAdapter {
@@ -302,12 +311,25 @@ export class ILinkDirectAdapter implements ChannelAdapter {
   private async handleMessage(msg: WeixinMessage): Promise<void> {
     if (msg.message_type !== 1) return // 只处理用户消息
     const from = msg.from_user_id
-    const text = msg.item_list?.[0]?.text_item?.text?.trim()
-    if (!from || !text) return
+    const items = msg.item_list ?? []
+    const textItem = items.find((i) => i.type === 1)
+    let text = textItem?.text_item?.text?.trim() ?? ''
+    if (!from || (items.length === 0 && !text)) return
     const msgId = msg.client_msg_id ?? msg.server_msg_id ?? `${from}:${msg.create_time_ms ?? Date.now()}`
     if (this.seen.has(msgId)) return
     this.seen.add(msgId)
     if (this.seen.size > 2000) this.seen.clear()
+
+    // F8：下载解密多媒体附件（图片/语音/文件/视频）
+    const media: MediaAttachment[] = []
+    let seq = 0
+    for (const item of items) {
+      const att = await downloadMediaItem(item, this.opts.mediaDir, this.opts.maxBytes, this.opts.logger, seq++)
+      if (att) {
+        media.push(att)
+        text += `\n[${kindLabel(att.kind)}附件已保存: ${att.path}${att.kind === 'file' ? `（${att.name}，${att.size} 字节）` : ''}]`
+      }
+    }
 
     const groupId = msg.group_id
     const inbound: InboundMessage = {
@@ -318,10 +340,11 @@ export class ILinkDirectAdapter implements ChannelAdapter {
       contextToken: msg.context_token ?? '',
       msgId,
       text,
-      items: msg.item_list ?? [],
+      items,
+      media,
       receivedAt: msg.create_time_ms ?? Date.now(),
     }
-    fileLog('inbound', 'kind=' + inbound.kind + ' from=' + from + ' text=' + text.slice(0, 40))
+    fileLog('inbound', 'kind=' + inbound.kind + ' from=' + from + ' media=' + media.length + ' text=' + text.slice(0, 40))
     if (this.handler) await this.handler(inbound)
   }
 

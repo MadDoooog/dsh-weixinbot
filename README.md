@@ -110,12 +110,22 @@ dsh web        # 或 dsh --profile <name>
 | `commandPrefix` | `/` | 命令前缀 |
 | `dsh.cwd` | home | 专属 agent 工作目录 |
 | `server.port` | `3901` | 健康检查端口 |
+| `notifier.enabled` | `true` | 注册 wechat_send / wechat_notify 工具 |
+| `approval.enabled` | `true` | 审批桥（agent 请求批准 → 微信卡片） |
+| `approval.timeoutMs` | `300000` | 审批等待超时（超时自动拒绝） |
+| `media.dir` | `$DSH_HOME/weixinbot/media` | 多媒体保存目录 |
+| `media.maxBytes` | `26214400` | 单个媒体大小上限（25MB） |
 
-## M1 范围与已知限制
+## M3 范围与已知限制
 
-- 仅**文本**单向桥（微信 → DSH → 微信），上下文持久、跨重启连续。
+- **typing**、**主动通知工具**、**审批桥**、**多模态接收**（图片/语音/文件/视频，CDN + AES-128-ECB 解密后保存，agent 以附件路径方式读取）已实现。
+- 已知限制：
+  - 语音以原始 SILK 格式保存（silk→wav 转码未内置），agent 直接读文件路径；
+  - 图片尚未以视觉 block 注入模型（设计 R5，需视觉模型支持）；
+  - 主动推送（wechat_send / 审批卡片）不带 context_token，若腾讯端静默丢弃需实测确认。
+
 - 仅**单聊**；群聊（F13）降级 P2。
-- 凭据/游标持久化：`$DSH_HOME/weixinbot/`（credentials.json 0600、cursor.json）。
+- 凭据/游标/代次/会话映射持久化：`$DSH_HOME/weixinbot/`（credentials.json 0600、cursor.json、session-map.json、media/）。
 - 掉线检测（`errcode=-14` / 401）→ 日志与健康检查标记，重新扫码即可恢复。
 
 ## 参考

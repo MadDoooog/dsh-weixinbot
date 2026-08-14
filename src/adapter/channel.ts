@@ -11,6 +11,14 @@ export interface MediaItem {
   text_item?: { text?: string }
 }
 
+/** 已下载解密的多媒体附件（F8）。 */
+export interface MediaAttachment {
+  kind: 'image' | 'voice' | 'file' | 'video'
+  path: string
+  name: string
+  size: number
+}
+
 /** 规范化入站消息（协议无关）。 */
 export interface InboundMessage {
   kind: 'direct' | 'group'
@@ -26,6 +34,8 @@ export interface InboundMessage {
   msgId: string
   text: string
   items: MediaItem[]
+  /** 已下载解密的多媒体附件（F8；文本消息为空数组）。 */
+  media: MediaAttachment[]
   receivedAt: number
 }
 

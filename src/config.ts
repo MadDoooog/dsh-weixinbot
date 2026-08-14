@@ -58,6 +58,13 @@ export interface ApprovalConfig {
   timeoutMs: number
 }
 
+export interface MediaConfig {
+  /** 多媒体保存目录；默认 $DSH_HOME/weixinbot/media。 */
+  dir?: string
+  /** 单个媒体大小上限（字节），默认 25MB。 */
+  maxBytes: number
+}
+
 export interface Config {
   enabled: boolean
   /** 通道适配器：ilink-direct（内置协议）| openclaw-relay（预留）。 */
@@ -78,6 +85,8 @@ export interface Config {
   notifier: NotifierConfig
   /** F12 审批桥。 */
   approval: ApprovalConfig
+  /** F8 多媒体接收。 */
+  media: MediaConfig
   /** 是否写独立日志文件 $DSH_HOME/weixinbot/weixinbot.log。 */
   logFile: boolean
 }
@@ -113,6 +122,9 @@ export const DEFAULT_CONFIG: Config = {
   approval: {
     enabled: true,
     timeoutMs: 5 * 60 * 1000,
+  },
+  media: {
+    maxBytes: 25 * 1024 * 1024,
   },
   logFile: true,
 }

@@ -72,6 +72,8 @@ function weixinbotOverride(userId) {
       port: 3901
     notifier:
       enabled: true
+    media:
+      maxBytes: 26214400
     approval:
       enabled: true
       timeoutMs: 300000
