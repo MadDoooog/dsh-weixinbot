@@ -65,6 +65,7 @@ function weixinbotOverride(userId) {
       - '${userId}'
     adminUsers: []
     commandPrefix: /
+    notifyOnStart: false
     dsh:
       cwd: ''
     server:

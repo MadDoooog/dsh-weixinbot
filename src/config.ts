@@ -79,6 +79,8 @@ export interface Config {
   adminUsers: string[]
   /** 命令前缀（/help /new /status）。 */
   commandPrefix: string
+  /** 插件启动时向绑定者推送一条微信通知（重启后告知「启动好了」）。 */
+  notifyOnStart: boolean
   dsh: DshConfig
   server: ServerConfig
   /** F9 主动通知工具开关。 */
@@ -109,6 +111,7 @@ export const DEFAULT_CONFIG: Config = {
   allowUsers: [],
   adminUsers: [],
   commandPrefix: '/',
+  notifyOnStart: false,
   dsh: {
     cwd: '',
   },

@@ -22,6 +22,7 @@
         allowUsers: []
         adminUsers: []
         commandPrefix: /
+        notifyOnStart: false
         dsh:
           cwd: ''
           provider: null

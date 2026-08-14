@@ -2,7 +2,8 @@
  * dsh-weixinbot — DeepSeek Harness 微信 ClawBot（iLink）消息桥插件。
  *
  * 微信发消息 → 专属持久 agent 会话（ctx.agents）回答 → 回发到微信。
- * M1 原型范围：文本单向桥 + 扫码登录 + 白名单 + 健康检查 + 命令（/help /status /new）。
+ * M3 范围：文本双向桥 + 扫码登录 + 白名单 + 命令（/help /status /whoami /new /list /switch /cancel）
+ * + typing + 多模态接收 + wechat_send/notify 工具 + 审批桥 + 启动通知。
  */
 import os from 'node:os'
 import path from 'node:path'
@@ -22,6 +23,8 @@ import { ApprovalBridge, type ApprovalHost } from './approval/bridge.js'
 export const name = 'dsh-weixinbot'
 /** 需要的服务：AgentRegistry（ctx.agents）+ 默认模型选择器。 */
 export const inject = ['agents', 'agentDefaultModel']
+/** 启动通知进程级去重（热重载/重复 apply 只推一次）。 */
+let notifiedStart = false
 export type { Config } from './config.js'
 
 export function apply(ctx: Context, config: Config = {} as Config): () => Promise<void> {
@@ -120,6 +123,16 @@ export function apply(ctx: Context, config: Config = {} as Config): () => Promis
   if (cfg.server.enabled) {
     void server.start().catch((e) => logger.error('健康检查服务启动失败: %s', formatError(e)))
   }
+
+  // 启动通知：重启完成后微信告知「启动好了」（进程级去重，热重载不重复推）
+  if (cfg.notifyOnStart && ownerUserId && adapter.isLoggedIn() && !notifiedStart) {
+    notifiedStart = true
+    adapter
+      .send(ownerUserId, '', `✅ dsh-weixinbot 已启动（${new Date().toISOString()}）`)
+      .then(() => logger.info('已推送启动通知到 %s', ownerUserId))
+      .catch((e) => logger.warn('启动通知发送失败: %s', formatError(e)))
+  }
+
   logger.info('dsh-weixinbot 已启动: %s', JSON.stringify(state))
   fileLog('apply', 'dsh-weixinbot loaded state=' + JSON.stringify(state))
 
