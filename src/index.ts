@@ -19,6 +19,7 @@ import { AgentRunner } from './runner/agent-runner.js'
 import { StatusServer } from './server/health.js'
 import { registerNotifyTools, type ToolsHost } from './notifier/tools.js'
 import { ApprovalBridge, type ApprovalHost } from './approval/bridge.js'
+import { maybeInjectContinuation } from './continuation.js'
 
 export const name = 'dsh-weixinbot'
 /** 需要的服务：AgentRegistry（ctx.agents）+ 默认模型选择器。 */
@@ -132,6 +133,11 @@ export function apply(ctx: Context, config: Config = {} as Config): () => Promis
       .then(() => logger.info('已推送启动通知到 %s', ownerUserId))
       .catch((e) => logger.warn('启动通知发送失败: %s', formatError(e)))
   }
+
+  // 续跑：agent 自重启后，把重启前写的待办注入其会话，自动唤醒继续处理
+  void maybeInjectContinuation(ctx, home, logger, { provider, model }).then((ok) => {
+    if (ok) logger.info('续跑注入完成')
+  })
 
   logger.info('dsh-weixinbot 已启动: %s', JSON.stringify(state))
   fileLog('apply', 'dsh-weixinbot loaded state=' + JSON.stringify(state))
