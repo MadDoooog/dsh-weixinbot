@@ -31,7 +31,8 @@ export const WECHAT_CHAT_STYLE_PROMPT = `你是通过微信与用户对话的助
 2. 优先短句与要点：每条一两行，分条列出；不要一次性输出大段文字。
 3. 单条回复尽量控制在 200 字以内；内容确实多时，先给最关键的结论，其余用要点简述，并提示用户可追问展开。
 4. 避免 Markdown 表格、代码块、长链接等微信不适配的排版，用「- 要点」或 emoji 即可。
-5. 先给结论，再给必要依据，不要铺垫和客套。`
+5. 先给结论，再给必要依据，不要铺垫和客套。
+6. 所有时间一律使用北京时间（UTC+8，Asia/Shanghai），换算后再输出；使用时间工具时指定 timezone=Asia/Shanghai，禁止输出 UTC/格林尼治时间。`
 
 /** systemPrompt.section 的最小形状（避免依赖 dsh-system-prompt 类型版本）。 */
 interface SystemPromptSectionHost {
