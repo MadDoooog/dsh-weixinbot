@@ -57,10 +57,15 @@ const liveAgents = new Map<string, AgentHandle>()
 export class AgentRunner implements MessageRunner {
   private handles = new Map<string, AgentHandle>()
   private inflight = new Map<string, Promise<string>>()
-  /** 每个会话的开新计数：/new 后轮换 sessionId。 */
+  /**
+   * 每个会话的开新计数（持久化到 $DSH_HOME/weixinbot/session-map.json）：
+   * /new 显式开新会话时才轮换 sessionId；普通消息/热重载绝不轮换。
+   */
   private generation = new Map<string, number>()
 
-  constructor(private cfg: AgentRunnerConfig, private ctx: Context, private log: Logger) {}
+  constructor(private cfg: AgentRunnerConfig, private ctx: Context, private log: Logger) {
+    this.generation = this.loadGenerations()
+  }
 
   /** 串行化同一会话：同一时刻只有一个 turn 在跑。 */
   ask(key: string, text: string): Promise<string> {
@@ -80,10 +85,11 @@ export class AgentRunner implements MessageRunner {
     return run
   }
 
-  /** /new：丢弃旧上下文（dispose 旧 handle），下次 ask 用新 sessionId。 */
+  /** /new：显式开新会话——代次 +1（持久化），dispose 旧 handle，下次 ask 用新 sessionId。 */
   async reset(key: string): Promise<void> {
     const gen = (this.generation.get(key) ?? 0) + 1
     this.generation.set(key, gen)
+    this.persistGenerations()
     const handle = this.handles.get(key) ?? liveAgents.get(key)
     this.handles.delete(key)
     liveAgents.delete(key)
@@ -155,55 +161,61 @@ export class AgentRunner implements MessageRunner {
     }
     const existing = this.handles.get(key)
     if (existing) return existing
-    const baseId = this.sessionIdFor(key)
+    const sessionId = SessionId(this.sessionIdFor(key))
 
-    // 1) 优先恢复既有会话
+    // 1) 优先恢复既有会话（含跨进程重启：从磁盘恢复持久上下文）
+    let resumeErr = ''
     try {
       const handle = await this.ctx.agents.resume({
-        resumeSessionId: SessionId(baseId),
+        resumeSessionId: sessionId,
         agentOptions: agentOptions(this.cfg),
       })
-      this.log.info('恢复会话 %s', baseId)
-      fileLog('resume', 'OK session=' + baseId)
-      liveAgents.set(key, handle)
-      this.handles.set(key, handle)
+      this.log.info('恢复会话 %s', sessionId)
+      fileLog('resume', 'OK session=' + sessionId)
+      this.cache(key, handle)
       return handle
     } catch (e) {
-      fileLog('resume', 'FAIL session=' + baseId + ' err=' + formatError(e))
+      resumeErr = formatError(e)
+      fileLog('resume', 'FAIL session=' + sessionId + ' err=' + resumeErr)
     }
 
-    // 2) 创建（带自愈：冲突时清磁盘残留 → 尝试恢复磁盘日志 → 轮换 id）
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const sid = SessionId(attempt === 0 ? baseId : baseId + '-' + attempt)
-      if (attempt > 0) await this.purgeSession(String(sid))
-      try {
-        const handle = await this.createAgent(sid)
-        liveAgents.set(key, handle)
-        this.handles.set(key, handle)
+    // 2) 会话仍被（旧实例热重载残留的）live agent 占用 → 复用注册表里的
+    //    live Agent，绝不 purge/轮换（purge 会连上下文一起删掉）。
+    if (/while it is live|cannot prepare/i.test(resumeErr)) {
+      const agent = this.ctx.agents.get(sessionId)
+      if (agent) {
+        const handle: AgentHandle = { agent, dispose: async () => {} }
+        this.log.info('复用仍存活的会话 %s（热重载残留，保留上下文）', sessionId)
+        fileLog('reuse-live', 'session=' + sessionId)
+        this.cache(key, handle)
         return handle
-      } catch (e2) {
-        const msg = formatError(e2)
-        if (/already exists|while it is live|cannot prepare|collision|does not match/i.test(msg)) {
-          await this.purgeSession(String(sid))
-          // 磁盘可能已有该 id 的持久日志（上个进程/轮换遗留）→ 恢复而不是重建
-          try {
-            const handle = await this.ctx.agents.resume({
-              resumeSessionId: sid,
-              agentOptions: agentOptions(this.cfg),
-            })
-            fileLog('heal', 'resumed after collision session=' + sid)
-            liveAgents.set(key, handle)
-            this.handles.set(key, handle)
-            return handle
-          } catch (e3) {
-            fileLog('heal', 'rotate to ' + sid + ' after: ' + msg + ' | resume-fallback: ' + formatError(e3))
-          }
-        } else {
-          throw e2
-        }
       }
     }
-    throw new Error('无法创建会话（' + baseId + '，多次自愈失败）')
+
+    // 3) 创建新会话。只有「磁盘残留」冲突（already exists，非 live）才清掉重试；
+    //    绝不因 live 冲突轮换 id（否则每条消息/每次重载都生成新会话）。
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const handle = await this.createAgent(sessionId)
+        this.cache(key, handle)
+        return handle
+      } catch (e2) {
+        const msg2 = formatError(e2)
+        if (attempt === 0 && /already exists|does not match/i.test(msg2)) {
+          // 磁盘残留（上个进程崩溃遗留的持久目录）→ 清掉后重试同 id
+          await this.purgeSession(String(sessionId))
+          fileLog('heal', 'purged disk residue, retry session=' + sessionId + ' err=' + msg2)
+          continue
+        }
+        throw e2
+      }
+    }
+    throw new Error('无法创建会话（' + sessionId + '）')
+  }
+
+  private cache(key: string, handle: AgentHandle): void {
+    liveAgents.set(key, handle)
+    this.handles.set(key, handle)
   }
 
   private async createAgent(sessionId: SessionId): Promise<AgentHandle> {
@@ -242,11 +254,37 @@ export class AgentRunner implements MessageRunner {
     }
   }
 
-  /** 稳定、文件系统安全的会话 id：im-wechat-<sha256(key) 前 16 位>。 */
+  /** 稳定、文件系统安全的会话 id：im-wechat-<sha256(key) 前 16 位>；/new 后追加代次。 */
   private sessionIdFor(key: string): string {
     const gen = this.generation.get(key) ?? 0
     const hash = createHash('sha256').update(key).digest('hex').slice(0, 16)
     return gen > 0 ? `im-wechat-${hash}-${gen}` : `im-wechat-${hash}`
+  }
+
+  // ── 代次持久化：保证跨重启 /new 计数连续，普通消息永不轮换会话 ──
+
+  private sessionMapPath(): string {
+    const home = process.env.DSH_HOME || path.join(os.homedir(), '.dsh')
+    return path.join(home, 'weixinbot', 'session-map.json')
+  }
+
+  private loadGenerations(): Map<string, number> {
+    try {
+      const raw = JSON.parse(fs.readFileSync(this.sessionMapPath(), 'utf8')) as Record<string, number>
+      return new Map(Object.entries(raw))
+    } catch {
+      return new Map()
+    }
+  }
+
+  private persistGenerations(): void {
+    try {
+      const file = this.sessionMapPath()
+      fs.mkdirSync(path.dirname(file), { recursive: true })
+      fs.writeFileSync(file, JSON.stringify(Object.fromEntries(this.generation), null, 2), 'utf8')
+    } catch (e) {
+      this.log.warn('写入 session-map 失败: %s', formatError(e))
+    }
   }
 
   private lastTurn(events: readonly SessionEvent[]): number {
