@@ -11,8 +11,10 @@
  *   1. 校验 lib/ 已构建（插件入口是 lib/index.js）；
  *   2. 读取 $DSH_HOME/weixinbot/credentials.json 取 userId 填白名单；
  *   3. 运行 `dsh plugin --profile <name> add file:<本仓库>`（自动 reconcile bundles）；
- *   4. 若 profile 的 cordis.patch.yml 还没有 weixinbot 行，追加完整配置行
- *      （enabled=true、allowUsers=[userId]、server.enabled=true）。
+ *   4. 在 profile 的 cordis.patch.yml 写入 **id 定向覆盖**（`- id: weixinbot` + config，
+ *      不是 insert！）——weixinbot 行由插件 bundle patch 插入，profile 层按 id
+ *      覆盖（applyEntryPatches 的 entryMap 定位 + 字段替换）才能避免重复 id
+ *      导致 loader 报错（duplicate loader entry id）。
  */
 import fs from 'node:fs'
 import os from 'node:os'
@@ -41,36 +43,34 @@ function home() {
   return process.env.DSH_HOME || path.join(os.homedir(), '.dsh')
 }
 
-function weixinbotRow(userId) {
-  return `- insert:
-    - id: weixinbot
-      name: 'dsh-weixinbot'
-      config:
-        enabled: true
-        adapter: ilink-direct
-        credentials:
-          botToken: ''
-          baseUrl: https://ilinkai.weixin.qq.com
-          botId: ''
-          userId: ''
-        poll:
-          timeoutMs: 35000
-          retryDelayMs: 3000
-        queue:
-          turnTimeoutMs: 120000
-          rateLimitPer5min: 6
-        allowUsers:
-          - '${userId}'
-        adminUsers: []
-        commandPrefix: /
-        dsh:
-          cwd: ''
-          provider: null
-          model: null
-        server:
-          enabled: true
-          port: 3901
-        logFile: true
+/** id 定向覆盖块（非 insert）：覆盖插件 bundle patch 插入的 weixinbot 行。 */
+function weixinbotOverride(userId) {
+  return `- id: weixinbot
+  name: dsh-weixinbot
+  config:
+    enabled: true
+    adapter: ilink-direct
+    credentials:
+      botToken: ''
+      baseUrl: https://ilinkai.weixin.qq.com
+      botId: ''
+      userId: ''
+    poll:
+      timeoutMs: 35000
+      retryDelayMs: 3000
+    queue:
+      turnTimeoutMs: 120000
+      rateLimitPer5min: 6
+    allowUsers:
+      - '${userId}'
+    adminUsers: []
+    commandPrefix: /
+    dsh:
+      cwd: ''
+    server:
+      enabled: true
+      port: 3901
+    logFile: true
 `
 }
 
@@ -113,17 +113,23 @@ function main() {
     console.log('将执行（--apply 生效）:\n  ' + addCmd)
   }
 
-  // 4. profile 补丁：追加 weixinbot 行（若不存在）
+  // 4. profile 补丁：写入 weixinbot 的 id 定向覆盖（若还没有）
   if (!fs.existsSync(profileDir)) {
     console.error(`✗ profile 目录不存在：${profileDir}（先跑一次 dsh plugin 初始化）`)
     process.exit(2)
   }
   let content = fs.existsSync(patchPath) ? fs.readFileSync(patchPath, 'utf8') : ''
-  const hasRow = /^- id: weixinbot\s*$/m.test(content)
-  if (hasRow) {
-    console.log(`\nℹ ${patchPath} 已有 weixinbot 行，跳过写入；请手动确认 enabled=true 与 allowUsers`)
+  const hasOverride = /^- id: weixinbot\s*$/m.test(content)
+  const hasInsertedRow = /^ {4}- id: weixinbot\s*$/m.test(content)
+  if (hasInsertedRow) {
+    console.error(`\n✗ ${patchPath} 里 weixinbot 是 insert 行（会造成重复 id，loader 启动报错）`)
+    console.error('  请手动删除该 insert 块，再重新运行本工具')
+    process.exit(3)
+  }
+  if (hasOverride) {
+    console.log(`\nℹ ${patchPath} 已有 weixinbot 覆盖行，跳过写入；请手动确认 enabled=true 与 allowUsers`)
   } else {
-    const block = weixinbotRow(userId)
+    const block = weixinbotOverride(userId)
     if (args.apply) {
       content = content.trimEnd() + '\n\n' + block
       fs.writeFileSync(patchPath, content, 'utf8')

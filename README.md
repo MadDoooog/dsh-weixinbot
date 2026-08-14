@@ -46,16 +46,20 @@ node tools/wechat-login.mjs --patch          # 或直接更新 profile 的 cordi
 
 ### 4. 配置（profile 的 cordis.patch.yml，覆盖层）
 
+> ⚠️ weixinbot 行由插件 bundle patch 插入，profile 层必须用 **id 定向覆盖**（非 `insert`），
+> 否则会产生重复 id 导致 loader 报错（`duplicate loader entry id`）。可用
+> `node tools/mount.mjs --apply` 自动写入，或手写：
+
 ```yaml
-- insert:
-    - id: weixinbot
-      name: 'dsh-weixinbot'
-      config:
-        enabled: true
-        allowUsers: ['<你的 userId，扫码输出里有>']   # 空 = 全部拒绝（fail-closed）
-        server:
-          enabled: true
-          port: 3901
+- id: weixinbot
+  name: dsh-weixinbot
+  config:
+    enabled: true
+    allowUsers:
+      - '<你的 userId，扫码输出里有>'   # 空 = 全部拒绝（fail-closed）
+    server:
+      enabled: true
+      port: 3901
 ```
 
 ### 5. 生效
