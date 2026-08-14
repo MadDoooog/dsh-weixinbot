@@ -1,0 +1,32 @@
+# dsh-weixinbot bundle patch: the rows this bundle contributes when it is
+# listed in a profile's dsh.profile.bundles. Applied in bundle order over an
+# empty root; later bundle patches and the user's profile cordis.patch.yml may
+# target rows by id (last write wins per row).
+- insert:
+    - id: weixinbot
+      name: 'dsh-weixinbot'
+      config:
+        enabled: false
+        adapter: ilink-direct
+        credentials:
+          botToken: ''
+          baseUrl: https://ilinkai.weixin.qq.com
+          botId: ''
+          userId: ''
+        poll:
+          timeoutMs: 35000
+          retryDelayMs: 3000
+        queue:
+          turnTimeoutMs: 120000
+          rateLimitPer5min: 6
+        allowUsers: []
+        adminUsers: []
+        commandPrefix: /
+        dsh:
+          cwd: ''
+          provider: null
+          model: null
+        server:
+          enabled: false
+          port: 3901
+        logFile: true
