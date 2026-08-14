@@ -22,7 +22,7 @@ import { createHash } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import { createUserMessage, type ContentBlock } from '@deepseek-ai/dsh-llm'
 import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
-import type { AgentHandle } from '@deepseek-ai/dsh-agent'
+import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
 import { fileLog, formatError, type Logger } from '../util.js'
 
 export interface AgentRunnerConfig {
@@ -53,6 +53,8 @@ export interface MessageRunner {
   list(key: string): ConversationRecord
   /** /switch：切到指定代次（仅限已创建代次）。 */
   switchTo(key: string, gen: number): Promise<ConversationRecord>
+  /** /cancel：取消该会话正在运行的 turn；返回是否有 turn 被取消。 */
+  cancel(key: string): Promise<boolean>
   dispose(): Promise<void>
 }
 
@@ -74,6 +76,10 @@ export class AgentRunner implements MessageRunner {
   private inflight = new Map<string, Promise<string>>()
   /** channelKey → 代次记录（持久化）。 */
   private registry = new Map<string, ConversationRecord>()
+  /** channelKey → 当前运行 turn 的 agent（/cancel 用）。 */
+  private active = new Map<string, Agent>()
+  /** channelKey → 已请求取消（turn 收敛后抛「已取消」）。 */
+  private cancelled = new Set<string>()
 
   constructor(private cfg: AgentRunnerConfig, private ctx: Context, private log: Logger) {
     this.registry = this.loadRegistry()
@@ -130,6 +136,20 @@ export class AgentRunner implements MessageRunner {
     return rec
   }
 
+  /** /cancel：取消该会话正在运行的 turn。 */
+  async cancel(key: string): Promise<boolean> {
+    const agent = this.active.get(key)
+    if (!agent) return false
+    this.cancelled.add(key)
+    try {
+      await agent.cancel({ kind: 'hook', reason: 'user /cancel' })
+    } catch (e) {
+      this.log.warn('取消 turn 失败: %s', formatError(e))
+    }
+    fileLog('cancel', 'key=' + key)
+    return true
+  }
+
   async dispose(): Promise<void> {
     // 不 dispose 共享句柄：热重载后新 apply 实例复用仍在内存中的 live Agent；
     // 进程退出时由 DSH 清理。
@@ -160,6 +180,7 @@ export class AgentRunner implements MessageRunner {
   private async runOnce(key: string, text: string): Promise<string> {
     const handle = await this.getOrCreate(key)
     const agent = handle.agent
+    this.active.set(key, agent)
     const startTurn = this.lastTurn(agent.session.events)
     const message = createUserMessage({
       content: [{ type: 'text', text }],
@@ -186,6 +207,11 @@ export class AgentRunner implements MessageRunner {
       fileLog('whenIdle', 'settled, status=' + agent.status + ' events=' + agent.session.events.length)
     } finally {
       if (timer) clearTimeout(timer)
+    }
+    this.active.delete(key)
+    if (this.cancelled.delete(key)) {
+      fileLog('cancelled', 'turn cancelled by user, session=' + agent.id)
+      throw new Error('任务已取消')
     }
     try {
       const reply = this.extractReply(agent.session.events, startTurn)

@@ -59,6 +59,16 @@ export interface ConfirmedCredentials {
 
 const RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000
 const CHANNEL_VERSION = '1.0.2'
+/** typing ticket 缓存 TTL（官方 24h）。 */
+const TYPING_TICKET_TTL_MS = 24 * 60 * 60 * 1000
+
+/** TypingStatus：1 = 输入中，2 = 取消。 */
+const TYPING_STATUS = { TYPING: 1, CANCEL: 2 } as const
+
+interface TypingTicketEntry {
+  ticket: string
+  nextFetchAt: number
+}
 
 export class ILinkDirectAdapter implements ChannelAdapter {
   readonly name = 'ilink-direct'
@@ -69,6 +79,8 @@ export class ILinkDirectAdapter implements ChannelAdapter {
   private sendTimes: number[] = []
   private handler?: (msg: InboundMessage) => Promise<void> | void
   private lastPollAt = 0
+  /** userId → typing_ticket（缓存 24h）。 */
+  private typingTickets = new Map<string, TypingTicketEntry>()
 
   constructor(private opts: ILinkDirectOptions) {}
 
@@ -125,6 +137,66 @@ export class ILinkDirectAdapter implements ChannelAdapter {
 
   onMessage(handler: (msg: InboundMessage) => Promise<void> | void): void {
     this.handler = handler
+  }
+
+  // ── F7 typing「正在输入」──
+
+  async typingStart(userId: string, contextToken: string): Promise<void> {
+    try {
+      const ticket = await this.getTypingTicket(userId, contextToken)
+      if (!ticket) return
+      await this.sendTyping(userId, ticket, TYPING_STATUS.TYPING)
+    } catch (e) {
+      this.opts.logger.warn('[ilink-direct] typing 发送失败（降级）: %s', formatError(e))
+    }
+  }
+
+  async typingStop(userId: string): Promise<void> {
+    try {
+      const entry = this.typingTickets.get(userId)
+      if (!entry?.ticket) return
+      await this.sendTyping(userId, entry.ticket, TYPING_STATUS.CANCEL)
+    } catch (e) {
+      this.opts.logger.warn('[ilink-direct] typing 取消失败（降级）: %s', formatError(e))
+    }
+  }
+
+  /** getconfig 取 typing_ticket（per-user 缓存 24h）。 */
+  private async getTypingTicket(userId: string, contextToken: string): Promise<string> {
+    const entry = this.typingTickets.get(userId)
+    if (entry && Date.now() < entry.nextFetchAt) return entry.ticket
+    const data = await fetchJson(`${this.opts.baseUrl}/ilink/bot/getconfig`, {
+      method: 'POST',
+      headers: ilinkHeaders(this.opts.botToken),
+      body: JSON.stringify({
+        ilink_user_id: userId,
+        context_token: contextToken,
+        base_info: { channel_version: CHANNEL_VERSION },
+      }),
+      timeoutMs: 15000,
+    })
+    this.checkError(data, 'getconfig')
+    const ticket = String(data?.typing_ticket ?? '')
+    this.typingTickets.set(userId, {
+      ticket,
+      nextFetchAt: Date.now() + TYPING_TICKET_TTL_MS,
+    })
+    return ticket
+  }
+
+  private async sendTyping(userId: string, ticket: string, status: number): Promise<void> {
+    const data = await fetchJson(`${this.opts.baseUrl}/ilink/bot/sendtyping`, {
+      method: 'POST',
+      headers: ilinkHeaders(this.opts.botToken),
+      body: JSON.stringify({
+        ilink_user_id: userId,
+        typing_ticket: ticket,
+        status,
+        base_info: { channel_version: CHANNEL_VERSION },
+      }),
+      timeoutMs: 15000,
+    })
+    this.checkError(data, 'sendtyping')
   }
 
   async start(): Promise<void> {

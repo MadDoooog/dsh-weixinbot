@@ -46,6 +46,11 @@ export interface ServerConfig {
   port: number
 }
 
+export interface NotifierConfig {
+  /** 是否注册 wechat_send / wechat_notify 工具（F9）。 */
+  enabled: boolean
+}
+
 export interface Config {
   enabled: boolean
   /** 通道适配器：ilink-direct（内置协议）| openclaw-relay（预留）。 */
@@ -62,6 +67,8 @@ export interface Config {
   commandPrefix: string
   dsh: DshConfig
   server: ServerConfig
+  /** F9 主动通知工具开关。 */
+  notifier: NotifierConfig
   /** 是否写独立日志文件 $DSH_HOME/weixinbot/weixinbot.log。 */
   logFile: boolean
 }
@@ -90,6 +97,9 @@ export const DEFAULT_CONFIG: Config = {
   server: {
     enabled: false,
     port: 3901,
+  },
+  notifier: {
+    enabled: true,
   },
   logFile: true,
 }

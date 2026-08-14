@@ -41,6 +41,10 @@ export interface ChannelAdapter {
   status(): Record<string, unknown>
   /** 注册入站消息处理器（Bridge 调用一次）。 */
   onMessage(handler: (msg: InboundMessage) => Promise<void> | void): void
+  /** 发送「正在输入」状态（F7；可选，失败静默降级）。 */
+  typingStart?(userId: string, contextToken: string): Promise<void>
+  /** 结束「正在输入」状态（可选）。 */
+  typingStop?(userId: string): Promise<void>
 }
 
 /** Bridge 可用的最小 Logger（与 cordis logger 兼容）。 */

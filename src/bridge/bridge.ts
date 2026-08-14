@@ -73,6 +73,24 @@ export class Bridge {
     if (this.dedupe.size > DEDUPE_CAP) this.dedupe.clear()
 
     const key = `wechat:${msg.channelKey}`
+
+    // 命令绕过串行队列立即执行（否则 /cancel 无法中断进行中的 turn）
+    if (this.isCommand(msg.text)) {
+      this.stats.commands++
+      try {
+        await this.runCommand(key, msg)
+      } catch (e) {
+        const err = formatError(e)
+        this.log.warn('命令执行失败: %s', err)
+        try {
+          await this.adapter.send(msg.fromUserId, msg.contextToken, `❌ ${err}`)
+        } catch {
+          /* 失败回执也发不出就算了 */
+        }
+      }
+      return
+    }
+
     // 串行队列：同一会话同一时刻一个 turn
     const prev = this.inflight.get(key) ?? Promise.resolve()
     const run = prev.then(() => this.process(key, msg))
@@ -84,12 +102,14 @@ export class Bridge {
   }
 
   private async process(key: string, msg: InboundMessage): Promise<void> {
+    const typing = this.adapter.typingStart ? this.adapter : null
+    const keepalive = typing
+      ? setInterval(() => {
+          void this.adapter.typingStart?.(msg.fromUserId, msg.contextToken)
+        }, 5000)
+      : undefined
+    if (typing) await this.adapter.typingStart?.(msg.fromUserId, msg.contextToken)
     try {
-      if (this.isCommand(msg.text)) {
-        this.stats.commands++
-        const handled = await this.runCommand(key, msg)
-        if (handled) return
-      }
       const reply = await this.runner.ask(key, msg.text)
       this.stats.replies++
       for (const chunk of chunkText(reply)) {
@@ -99,15 +119,20 @@ export class Bridge {
       const err = formatError(e)
       this.log.warn('回答失败: %s', err)
       fileLog('answer-fail', 'key=' + key + ' err=' + err)
+      // 用户主动 /cancel 的 turn 不回错误
+      if (/已取消/i.test(err)) return
       try {
         await this.adapter.send(msg.fromUserId, msg.contextToken, `❌ 处理失败：${err}`)
       } catch (e2) {
         this.log.error('失败回执也发送失败: %s', formatError(e2))
       }
+    } finally {
+      if (keepalive) clearInterval(keepalive)
+      await this.adapter.typingStop?.(msg.fromUserId)
     }
   }
 
-  // ── 命令（/help /status /new /list /switch）──
+  // ── 命令（/help /status /new /list /switch /whoami /cancel）──
 
   private isCommand(text: string): boolean {
     return text.startsWith(this.cfg.commandPrefix)
@@ -123,8 +148,15 @@ export class Bridge {
 
     switch (cmd) {
       case 'help':
-        await send('可用命令：/help 帮助 · /status 状态 · /new 新会话 · /list 会话列表 · /switch <n> 切换')
+        await send('可用命令：/help · /status · /whoami · /new · /list · /switch <n> · /cancel')
         return true
+      case 'whoami': {
+        const rec = this.runner.list(key)
+        await send(
+          `👤 你是谁\n- 你的 ID：${from}\n- 管理员：${isAdmin ? '✅' : '❌'}\n- 当前会话：${rec.current}（共 ${rec.gens.length} 个）`,
+        )
+        return true
+      }
       case 'status': {
         const s = this.status() as unknown as {
           adapter?: { loggedIn?: boolean; pollAlive?: boolean }
@@ -178,6 +210,15 @@ export class Bridge {
         } catch (e) {
           await send(`❌ ${formatError(e)}`)
         }
+        return true
+      }
+      case 'cancel': {
+        if (!isAdmin) {
+          await send('⛔ 无权执行 /cancel（仅管理员）')
+          return true
+        }
+        const cancelled = await this.runner.cancel(key)
+        await send(cancelled ? '⏹ 已取消当前任务' : '⏹ 当前没有正在运行的任务')
         return true
       }
       default:

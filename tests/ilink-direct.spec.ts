@@ -11,6 +11,8 @@ import { ilinkHeaders, randomUin, chunkText } from '../src/util.js'
 /** 记录发送请求，供断言。 */
 const sentBodies: any[] = []
 const sentHeaders: Record<string, string>[] = []
+/** 记录 typing 请求（getconfig / sendtyping）。 */
+const typingBodies: any[] = []
 
 let server: http.Server
 let baseUrl = ''
@@ -85,6 +87,24 @@ beforeAll(async () => {
       req.on('end', () => {
         sentBodies.push(JSON.parse(body))
         sentHeaders.push(Object.fromEntries(Object.entries(req.headers).map(([k, v]) => [k, String(v)])))
+        json(res, { ret: 0 })
+      })
+      return
+    }
+    if (url.pathname === '/ilink/bot/getconfig') {
+      let body = ''
+      req.on('data', (c) => (body += c))
+      req.on('end', () => {
+        typingBodies.push(JSON.parse(body || '{}'))
+        json(res, { ret: 0, typing_ticket: 'ticket-1' })
+      })
+      return
+    }
+    if (url.pathname === '/ilink/bot/sendtyping') {
+      let body = ''
+      req.on('data', (c) => (body += c))
+      req.on('end', () => {
+        typingBodies.push(JSON.parse(body))
         json(res, { ret: 0 })
       })
       return
@@ -181,6 +201,27 @@ describe('ILinkDirectAdapter', () => {
     expect(h.authorization).toBe('Bearer tok-abc')
     expect(h.authorizationtype).toBe('ilink_bot_token')
     expect(h['x-wechat-uin']).toBeTruthy()
+  })
+
+  it('typingStart 先取 ticket 再发送输入状态（F7）', async () => {
+    typingBodies.length = 0
+    const adapter = makeAdapter()
+    await adapter.typingStart('user@im.wechat', 'ctx-1')
+    // 第一次 getconfig（取 ticket）
+    expect(typingBodies[0]).toMatchObject({ ilink_user_id: 'user@im.wechat', context_token: 'ctx-1' })
+    // sendtyping：TYPING=1，带 ticket
+    const send = typingBodies[1]
+    expect(send).toMatchObject({ ilink_user_id: 'user@im.wechat', typing_ticket: 'ticket-1', status: 1 })
+    expect(send.base_info).toEqual({ channel_version: '1.0.2' })
+  })
+
+  it('typingStop 发送取消状态（CANCEL=2）', async () => {
+    typingBodies.length = 0
+    const adapter = makeAdapter()
+    await adapter.typingStart('user@im.wechat', 'ctx-1')
+    typingBodies.length = 0 // 清掉 start 的两条
+    await adapter.typingStop('user@im.wechat')
+    expect(typingBodies[0]).toMatchObject({ ilink_user_id: 'user@im.wechat', status: 2 })
   })
 
   it('isLoggedIn / status 反映登录态', () => {

@@ -13,6 +13,7 @@ const silentLogger: Logger = { info: () => {}, warn: () => {}, error: () => {} }
 class StubAdapter implements ChannelAdapter {
   readonly name = 'stub'
   sent: { to: string; ctx: string; text: string }[] = []
+  typingEvents: { userId: string; kind: 'start' | 'stop' }[] = []
   started = false
   stopped = false
   private handler?: (msg: InboundMessage) => Promise<void> | void
@@ -25,6 +26,12 @@ class StubAdapter implements ChannelAdapter {
   }
   async send(toUserId: string, contextToken: string, text: string): Promise<void> {
     this.sent.push({ to: toUserId, ctx: contextToken, text })
+  }
+  async typingStart(userId: string): Promise<void> {
+    this.typingEvents.push({ userId, kind: 'start' })
+  }
+  async typingStop(userId: string): Promise<void> {
+    this.typingEvents.push({ userId, kind: 'stop' })
   }
   isLoggedIn(): boolean {
     return true
@@ -67,6 +74,10 @@ class StubRunner implements MessageRunner {
     this.rec = { ...this.rec, current: gen }
     return this.rec
   }
+  async cancel(): Promise<boolean> {
+    return this.cancelled = true
+  }
+  cancelled = false
   async dispose(): Promise<void> {}
 }
 
@@ -240,5 +251,76 @@ describe('Bridge', () => {
     expect(adapter.sent.length).toBe(1)
     expect(adapter.sent[0].text).toContain('❌ 处理失败')
     expect(adapter.sent[0].text).toContain('boom')
+  })
+
+  it('turn 前后发送 typing start/stop（F7）', async () => {
+    const adapter = new StubAdapter()
+    const runner = new StubRunner()
+    const bridge = new Bridge(
+      { allowUsers: ['user@im.wechat'], adminUsers: [], commandPrefix: '/' },
+      runner,
+      adapter,
+      silentLogger,
+    )
+    await bridge.start()
+    await adapter.emit(msg())
+    expect(adapter.typingEvents.some((t) => t.kind === 'start')).toBe(true)
+    expect(adapter.typingEvents.some((t) => t.kind === 'stop')).toBe(true)
+  })
+
+  it('/whoami 返回身份与会话信息', async () => {
+    const adapter = new StubAdapter()
+    const runner = new StubRunner()
+    runner.rec = { current: 1, gens: [0, 1] }
+    const bridge = new Bridge(
+      { allowUsers: ['user@im.wechat'], adminUsers: [], commandPrefix: '/' },
+      runner,
+      adapter,
+      silentLogger,
+    )
+    await bridge.start()
+    await adapter.emit(msg({ text: '/whoami' }))
+    expect(adapter.sent[0].text).toContain('user@im.wechat')
+    expect(adapter.sent[0].text).toContain('当前会话：1')
+  })
+
+  it('/cancel 调用 runner.cancel 并确认', async () => {
+    const adapter = new StubAdapter()
+    const runner = new StubRunner()
+    const bridge = new Bridge(
+      { allowUsers: ['user@im.wechat'], adminUsers: [], commandPrefix: '/' },
+      runner,
+      adapter,
+      silentLogger,
+    )
+    await bridge.start()
+    await adapter.emit(msg({ text: '/cancel' }))
+    expect(runner.cancelled).toBe(true)
+    expect(adapter.sent[0].text).toContain('已取消当前任务')
+  })
+
+  it('命令绕过串行队列：进行中的 turn 不阻塞 /cancel', async () => {
+    const adapter = new StubAdapter()
+    const runner = new StubRunner()
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    runner.ask = async () => {
+      await gate // 模拟长 turn
+      return 'done'
+    }
+    const bridge = new Bridge(
+      { allowUsers: ['user@im.wechat'], adminUsers: [], commandPrefix: '/' },
+      runner,
+      adapter,
+      silentLogger,
+    )
+    await bridge.start()
+    const turnPromise = adapter.emit(msg()) // 长 turn 挂起
+    await new Promise((r) => setTimeout(r, 20))
+    const cancelPromise = adapter.emit(msg({ text: '/cancel', msgId: 'm-cancel' })) // 命令应立即执行
+    await cancelPromise // 不被队列阻塞
+    expect(adapter.sent[0].text).toContain('已取消当前任务')
+    release()
+    await turnPromise
   })
 })

@@ -16,6 +16,7 @@ import { ILinkDirectAdapter } from './adapter/ilink-direct.js'
 import { Bridge } from './bridge/bridge.js'
 import { AgentRunner } from './runner/agent-runner.js'
 import { StatusServer } from './server/health.js'
+import { registerNotifyTools, type ToolsHost } from './notifier/tools.js'
 
 export const name = 'dsh-weixinbot'
 /** 需要的服务：AgentRegistry（ctx.agents）+ 默认模型选择器。 */
@@ -88,6 +89,14 @@ export function apply(ctx: Context, config: Config = {} as Config): () => Promis
     logger,
   )
   const server = new StatusServer(cfg.server, () => bridge.status(), logger)
+
+  // F9 主动通知工具（wechat_send / wechat_notify）——注册进 DSH 工具箱
+  try {
+    const defaultTarget = (botToken && (cfg.credentials?.userId || fileCreds?.userId)) || ''
+    registerNotifyTools(ctx as ToolsHost, adapter, { enabled: cfg.notifier?.enabled ?? true, defaultTarget }, logger)
+  } catch (e) {
+    logger.warn('注册通知工具失败: %s', formatError(e))
+  }
 
   const state = { enabled: cfg.enabled, loggedIn: adapter.isLoggedIn(), adapter: cfg.adapter }
   if (cfg.enabled && adapter.isLoggedIn()) {
