@@ -107,21 +107,23 @@ export class Bridge {
     }
   }
 
-  // ── 命令（M1 最小集：/help /status /new）──
+  // ── 命令（/help /status /new /list /switch）──
 
   private isCommand(text: string): boolean {
     return text.startsWith(this.cfg.commandPrefix)
   }
 
   private async runCommand(key: string, msg: InboundMessage): Promise<boolean> {
-    const cmd = msg.text.slice(this.cfg.commandPrefix.length).trim().split(/\s+/)[0].toLowerCase()
+    const rest = msg.text.slice(this.cfg.commandPrefix.length).trim()
+    const parts = rest.split(/\s+/)
+    const cmd = (parts[0] ?? '').toLowerCase()
     const from = msg.fromUserId
     const isAdmin = (this.cfg.adminUsers.length > 0 ? this.cfg.adminUsers : this.cfg.allowUsers).includes(from)
     const send = (text: string) => this.adapter.send(msg.fromUserId, msg.contextToken, text)
 
     switch (cmd) {
       case 'help':
-        await send('可用命令：/help 帮助 · /status 状态 · /new 开启新会话')
+        await send('可用命令：/help 帮助 · /status 状态 · /new 新会话 · /list 会话列表 · /switch <n> 切换')
         return true
       case 'status': {
         const s = this.status() as unknown as {
@@ -145,9 +147,39 @@ export class Bridge {
           await send('⛔ 无权执行 /new（仅管理员）')
           return true
         }
-        await this.runner.reset(key)
-        await send('✅ 已开启新会话（旧上下文已丢弃）')
+        try {
+          const rec = await this.runner.next(key)
+          await send(`✅ 已切换到新会话（会话 ${rec.current}）\n/list 查看，/switch <n> 切回旧会话`)
+        } catch (e) {
+          await send(`❌ ${formatError(e)}`)
+        }
         return true
+      case 'list': {
+        const rec = this.runner.list(key)
+        const lines =
+          rec.gens.length > 0
+            ? rec.gens
+                .slice()
+                .sort((a, b) => a - b)
+                .map((g) => `[${g}] ${g === rec.current ? '（当前）' : ''}`.trimEnd())
+            : ['（暂无会话）']
+        await send('📋 会话列表\n' + lines.join('\n') + '\n/switch <n> 切换')
+        return true
+      }
+      case 'switch': {
+        const n = Number(parts[1])
+        if (parts.length < 2 || !Number.isInteger(n) || n < 0) {
+          await send('用法：/switch <会话号>（用 /list 查看）')
+          return true
+        }
+        try {
+          const rec = await this.runner.switchTo(key, n)
+          await send(`✅ 已切换到会话 ${rec.current}（下一条消息生效）`)
+        } catch (e) {
+          await send(`❌ ${formatError(e)}`)
+        }
+        return true
+      }
       default:
         return false
     }

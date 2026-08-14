@@ -1,12 +1,15 @@
 /**
  * AgentRunner：通过 DSH 官方 agent 运行时回答消息。
  *
- * 每个微信会话（channelKey）对应一个独立持久 Agent（`im-wechat-*` 会话），
- * 与 GUI 会话隔离；agent 的持久日志即其记忆，跨消息、跨重启上下文连续。
+ * 每个微信会话（channelKey）对应一组**代次会话**（generation）：
+ * - 同一个 channelKey 在同一代次内永远复用同一个 sessionId（跨消息、跨热重载、跨重启）；
+ * - `/new` 切换到新一代次（旧代次**保留**，可 `/list` + `/switch <n>` 切回）；
+ * - 代次记录持久化在 $DSH_HOME/weixinbot/session-map.json，重启后连续。
  *
  * API 契约（@deepseek-ai/dsh-agent）：
  * - `ctx.agents.resume({ resumeSessionId })` — 恢复持久会话；
  * - `ctx.agents.create({ sessionId, meta })` — 首次联系；
+ * - `ctx.agents.get(sessionId)` — 取注册表里仍存活的 live Agent（热重载残留复用）；
  * - `agent.followup(userMessage)` — 排队一个普通 turn 并唤醒循环；
  * - `agent.whenIdle()` — 等整轮 agent 活动收敛；
  * - `agent.cancel({ kind, reason })` — 超时取消；
@@ -33,11 +36,23 @@ export interface AgentRunnerConfig {
   model?: string
 }
 
+/** 一个微信会话的代次记录（持久化）。gens = 已实际创建过会话的代次。 */
+export interface ConversationRecord {
+  /** 当前代次（下一条消息使用）。 */
+  current: number
+  /** 已创建过的代次（/list 展示，/switch 可切）。 */
+  gens: number[]
+}
+
 /** Bridge 依赖的最小 runner 契约。 */
 export interface MessageRunner {
   ask(key: string, text: string): Promise<string>
-  /** 开新会话：丢弃旧上下文。 */
-  reset(key: string): Promise<void>
+  /** /new：切换到新一代次（旧代次保留）。返回新记录。 */
+  next(key: string): Promise<ConversationRecord>
+  /** /list：列出本会话已创建的代次。 */
+  list(key: string): ConversationRecord
+  /** /switch：切到指定代次（仅限已创建代次）。 */
+  switchTo(key: string, gen: number): Promise<ConversationRecord>
   dispose(): Promise<void>
 }
 
@@ -49,25 +64,22 @@ function agentOptions(cfg: AgentRunnerConfig): { provider?: string; model?: stri
 }
 
 /**
- * 进程级共享 Agent 句柄表：插件热重载（apply 再次执行）后，新实例
- * 直接复用旧实例仍在内存中的 live Agent，避免同 id 会话冲突。
+ * 进程级共享 live Agent 句柄表（按 sessionId 索引）：插件热重载/重复 apply 后，
+ * 新实例直接复用旧实例仍在内存中的 live Agent，避免同 id 会话冲突。
  */
 const liveAgents = new Map<string, AgentHandle>()
 
 export class AgentRunner implements MessageRunner {
   private handles = new Map<string, AgentHandle>()
   private inflight = new Map<string, Promise<string>>()
-  /**
-   * 每个会话的开新计数（持久化到 $DSH_HOME/weixinbot/session-map.json）：
-   * /new 显式开新会话时才轮换 sessionId；普通消息/热重载绝不轮换。
-   */
-  private generation = new Map<string, number>()
+  /** channelKey → 代次记录（持久化）。 */
+  private registry = new Map<string, ConversationRecord>()
 
   constructor(private cfg: AgentRunnerConfig, private ctx: Context, private log: Logger) {
-    this.generation = this.loadGenerations()
+    this.registry = this.loadRegistry()
   }
 
-  /** 串行化同一会话：同一时刻只有一个 turn 在跑。 */
+  /** 串行化同一会话：同一时刻只有一个 turn 在跑（跨代次同样串行）。 */
   ask(key: string, text: string): Promise<string> {
     const prev = this.inflight.get(key) ?? Promise.resolve('')
     const run = prev.then(() => this.runOnce(key, text))
@@ -85,23 +97,37 @@ export class AgentRunner implements MessageRunner {
     return run
   }
 
-  /** /new：显式开新会话——代次 +1（持久化），dispose 旧 handle，下次 ask 用新 sessionId。 */
-  async reset(key: string): Promise<void> {
-    const gen = (this.generation.get(key) ?? 0) + 1
-    this.generation.set(key, gen)
-    this.persistGenerations()
-    const handle = this.handles.get(key) ?? liveAgents.get(key)
-    this.handles.delete(key)
-    liveAgents.delete(key)
-    if (handle) {
-      try {
-        await handle.dispose()
-        this.log.info('会话 %s 已重置（gen=%d）', key, gen)
-        fileLog('reset', 'key=' + key + ' gen=' + gen)
-      } catch (e) {
-        this.log.warn('重置会话 %s 失败: %s', key, formatError(e))
-      }
+  // ── 会话切换（/new /list /switch）──
+
+  /** /new：切到新一代次。旧代次不 dispose（保留上下文，可 /switch 切回）。 */
+  async next(key: string): Promise<ConversationRecord> {
+    const rec = this.ensure(key)
+    // 当前代次还没实际创建过会话（刚 /new 过但没发过消息）→ 无需再开
+    if (!rec.gens.includes(rec.current)) return rec
+    const nextGen = (rec.gens.length ? Math.max(...rec.gens) : -1) + 1
+    rec.current = nextGen
+    this.persistRegistry()
+    this.log.info('会话 %s 切换到 gen=%d（旧代次保留）', key, nextGen)
+    fileLog('next', 'key=' + key + ' current=' + nextGen + ' gens=' + JSON.stringify(rec.gens))
+    return rec
+  }
+
+  /** /list：列出已创建的代次。 */
+  list(key: string): ConversationRecord {
+    return this.ensure(key)
+  }
+
+  /** /switch：切到指定代次（仅限已创建代次）。 */
+  async switchTo(key: string, gen: number): Promise<ConversationRecord> {
+    const rec = this.ensure(key)
+    if (!Number.isInteger(gen) || !rec.gens.includes(gen)) {
+      throw new Error(`会话 ${gen} 不存在（/list 查看可用代次）`)
     }
+    rec.current = gen
+    this.persistRegistry()
+    this.log.info('会话 %s 切回 gen=%d', key, gen)
+    fileLog('switch', 'key=' + key + ' current=' + gen)
+    return rec
   }
 
   async dispose(): Promise<void> {
@@ -111,6 +137,25 @@ export class AgentRunner implements MessageRunner {
   }
 
   // ── 内部 ──
+
+  private ensure(key: string): ConversationRecord {
+    let rec = this.registry.get(key)
+    if (!rec) {
+      rec = { current: 0, gens: [] }
+      this.registry.set(key, rec)
+    }
+    return rec
+  }
+
+  /** 稳定、文件系统安全的会话 id：im-wechat-<sha256(key) 前 16 位>；gen>0 追加代次。 */
+  private sidFor(key: string, gen: number): string {
+    const hash = createHash('sha256').update(key).digest('hex').slice(0, 16)
+    return gen > 0 ? `im-wechat-${hash}-${gen}` : `im-wechat-${hash}`
+  }
+
+  private sessionIdFor(key: string): string {
+    return this.sidFor(key, this.ensure(key).current)
+  }
 
   private async runOnce(key: string, text: string): Promise<string> {
     const handle = await this.getOrCreate(key)
@@ -153,41 +198,44 @@ export class AgentRunner implements MessageRunner {
   }
 
   private async getOrCreate(key: string): Promise<AgentHandle> {
-    // 跨实例复用：热重载/重复 apply 后旧 Agent 仍 live，直接续用
-    const shared = liveAgents.get(key)
+    const sid = this.sessionIdFor(key)
+
+    // 跨实例复用：热重载/重复 apply 后旧 Agent 仍 live，直接续用（按 sessionId 索引）
+    const shared = liveAgents.get(sid)
     if (shared) {
-      this.handles.set(key, shared)
+      this.handles.set(sid, shared)
       return shared
     }
-    const existing = this.handles.get(key)
+    const existing = this.handles.get(sid)
     if (existing) return existing
-    const sessionId = SessionId(this.sessionIdFor(key))
 
     // 1) 优先恢复既有会话（含跨进程重启：从磁盘恢复持久上下文）
     let resumeErr = ''
     try {
       const handle = await this.ctx.agents.resume({
-        resumeSessionId: sessionId,
+        resumeSessionId: SessionId(sid),
         agentOptions: agentOptions(this.cfg),
       })
-      this.log.info('恢复会话 %s', sessionId)
-      fileLog('resume', 'OK session=' + sessionId)
-      this.cache(key, handle)
+      this.log.info('恢复会话 %s', sid)
+      fileLog('resume', 'OK session=' + sid)
+      this.recordCreated(key)
+      this.cache(sid, handle)
       return handle
     } catch (e) {
       resumeErr = formatError(e)
-      fileLog('resume', 'FAIL session=' + sessionId + ' err=' + resumeErr)
+      fileLog('resume', 'FAIL session=' + sid + ' err=' + resumeErr)
     }
 
     // 2) 会话仍被（旧实例热重载残留的）live agent 占用 → 复用注册表里的
     //    live Agent，绝不 purge/轮换（purge 会连上下文一起删掉）。
     if (/while it is live|cannot prepare/i.test(resumeErr)) {
-      const agent = this.ctx.agents.get(sessionId)
+      const agent = this.ctx.agents.get(SessionId(sid))
       if (agent) {
         const handle: AgentHandle = { agent, dispose: async () => {} }
-        this.log.info('复用仍存活的会话 %s（热重载残留，保留上下文）', sessionId)
-        fileLog('reuse-live', 'session=' + sessionId)
-        this.cache(key, handle)
+        this.log.info('复用仍存活的会话 %s（热重载残留，保留上下文）', sid)
+        fileLog('reuse-live', 'session=' + sid)
+        this.recordCreated(key)
+        this.cache(sid, handle)
         return handle
       }
     }
@@ -196,26 +244,38 @@ export class AgentRunner implements MessageRunner {
     //    绝不因 live 冲突轮换 id（否则每条消息/每次重载都生成新会话）。
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const handle = await this.createAgent(sessionId)
-        this.cache(key, handle)
+        const handle = await this.createAgent(SessionId(sid))
+        this.recordCreated(key)
+        this.cache(sid, handle)
         return handle
       } catch (e2) {
         const msg2 = formatError(e2)
         if (attempt === 0 && /already exists|does not match/i.test(msg2)) {
           // 磁盘残留（上个进程崩溃遗留的持久目录）→ 清掉后重试同 id
-          await this.purgeSession(String(sessionId))
-          fileLog('heal', 'purged disk residue, retry session=' + sessionId + ' err=' + msg2)
+          await this.purgeSession(sid)
+          fileLog('heal', 'purged disk residue, retry session=' + sid + ' err=' + msg2)
           continue
         }
         throw e2
       }
     }
-    throw new Error('无法创建会话（' + sessionId + '）')
+    throw new Error('无法创建会话（' + sid + '）')
   }
 
-  private cache(key: string, handle: AgentHandle): void {
-    liveAgents.set(key, handle)
-    this.handles.set(key, handle)
+  /** 记录当前代次已实际创建过会话（持久化）。 */
+  private recordCreated(key: string): void {
+    const rec = this.ensure(key)
+    const gen = rec.current
+    if (!rec.gens.includes(gen)) {
+      rec.gens.push(gen)
+      this.persistRegistry()
+      fileLog('record', 'key=' + key + ' created gen=' + gen + ' gens=' + JSON.stringify(rec.gens))
+    }
+  }
+
+  private cache(sid: string, handle: AgentHandle): void {
+    liveAgents.set(sid, handle)
+    this.handles.set(sid, handle)
   }
 
   private async createAgent(sessionId: SessionId): Promise<AgentHandle> {
@@ -231,7 +291,7 @@ export class AgentRunner implements MessageRunner {
     return handle
   }
 
-  /** 删除本插件创建的 im-* 会话的持久化目录（自愈用）。 */
+  /** 删除本插件创建的 im-* 会话的持久化目录（仅磁盘残留自愈用）。 */
   private async purgeSession(sessionId: string): Promise<boolean> {
     try {
       const home = process.env.DSH_HOME || path.join(os.homedir(), '.dsh')
@@ -254,34 +314,36 @@ export class AgentRunner implements MessageRunner {
     }
   }
 
-  /** 稳定、文件系统安全的会话 id：im-wechat-<sha256(key) 前 16 位>；/new 后追加代次。 */
-  private sessionIdFor(key: string): string {
-    const gen = this.generation.get(key) ?? 0
-    const hash = createHash('sha256').update(key).digest('hex').slice(0, 16)
-    return gen > 0 ? `im-wechat-${hash}-${gen}` : `im-wechat-${hash}`
-  }
-
-  // ── 代次持久化：保证跨重启 /new 计数连续，普通消息永不轮换会话 ──
+  // ── 代次记录持久化（$DSH_HOME/weixinbot/session-map.json）──
 
   private sessionMapPath(): string {
     const home = process.env.DSH_HOME || path.join(os.homedir(), '.dsh')
     return path.join(home, 'weixinbot', 'session-map.json')
   }
 
-  private loadGenerations(): Map<string, number> {
+  private loadRegistry(): Map<string, ConversationRecord> {
     try {
-      const raw = JSON.parse(fs.readFileSync(this.sessionMapPath(), 'utf8')) as Record<string, number>
-      return new Map(Object.entries(raw))
+      const raw = JSON.parse(fs.readFileSync(this.sessionMapPath(), 'utf8')) as Record<string, unknown>
+      const out = new Map<string, ConversationRecord>()
+      for (const [k, v] of Object.entries(raw)) {
+        if (v && typeof v === 'object' && Array.isArray((v as ConversationRecord).gens)) {
+          out.set(k, v as ConversationRecord)
+        } else if (typeof v === 'number') {
+          // 旧格式迁移：{ key: gen } → { current: gen, gens: [0..gen] }
+          out.set(k, { current: v, gens: Array.from({ length: v + 1 }, (_, i) => i) })
+        }
+      }
+      return out
     } catch {
       return new Map()
     }
   }
 
-  private persistGenerations(): void {
+  private persistRegistry(): void {
     try {
       const file = this.sessionMapPath()
       fs.mkdirSync(path.dirname(file), { recursive: true })
-      fs.writeFileSync(file, JSON.stringify(Object.fromEntries(this.generation), null, 2), 'utf8')
+      fs.writeFileSync(file, JSON.stringify(Object.fromEntries(this.registry), null, 2), 'utf8')
     } catch (e) {
       this.log.warn('写入 session-map 失败: %s', formatError(e))
     }

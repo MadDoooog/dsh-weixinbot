@@ -43,15 +43,29 @@ class StubAdapter implements ChannelAdapter {
 
 class StubRunner implements MessageRunner {
   calls: { key: string; text: string }[] = []
-  resets = 0
+  nexts = 0
+  switches: number[] = []
   reply = 'ok'
+  rec = { current: 0, gens: [0] }
 
   async ask(key: string, text: string): Promise<string> {
     this.calls.push({ key, text })
     return this.reply
   }
-  async reset(): Promise<void> {
-    this.resets++
+  async next(): Promise<{ current: number; gens: number[] }> {
+    this.nexts++
+    const g = Math.max(...this.rec.gens) + 1
+    this.rec = { current: g, gens: [...this.rec.gens, g] }
+    return this.rec
+  }
+  list(): { current: number; gens: number[] } {
+    return this.rec
+  }
+  async switchTo(_key: string, gen: number): Promise<{ current: number; gens: number[] }> {
+    if (!this.rec.gens.includes(gen)) throw new Error(`会话 ${gen} 不存在（/list 查看可用代次）`)
+    this.switches.push(gen)
+    this.rec = { ...this.rec, current: gen }
+    return this.rec
   }
   async dispose(): Promise<void> {}
 }
@@ -144,7 +158,7 @@ describe('Bridge', () => {
     expect(adapter.sent[0].text).toContain('登录')
   })
 
-  it('/new 触发 runner.reset（管理员）', async () => {
+  it('/new 切到新会话（next 被调用，旧代次保留）', async () => {
     const adapter = new StubAdapter()
     const runner = new StubRunner()
     const bridge = new Bridge(
@@ -155,7 +169,42 @@ describe('Bridge', () => {
     )
     await bridge.start()
     await adapter.emit(msg({ text: '/new' }))
-    expect(runner.resets).toBe(1)
+    expect(runner.nexts).toBe(1)
+    expect(adapter.sent[0].text).toContain('会话 1')
+  })
+
+  it('/list 列出会话代次并标记当前', async () => {
+    const adapter = new StubAdapter()
+    const runner = new StubRunner()
+    runner.rec = { current: 1, gens: [0, 1] }
+    const bridge = new Bridge(
+      { allowUsers: ['user@im.wechat'], adminUsers: [], commandPrefix: '/' },
+      runner,
+      adapter,
+      silentLogger,
+    )
+    await bridge.start()
+    await adapter.emit(msg({ text: '/list' }))
+    expect(adapter.sent[0].text).toContain('[0]')
+    expect(adapter.sent[0].text).toContain('[1] （当前）')
+  })
+
+  it('/switch 切回旧会话；无效代次回错误', async () => {
+    const adapter = new StubAdapter()
+    const runner = new StubRunner()
+    runner.rec = { current: 1, gens: [0, 1] }
+    const bridge = new Bridge(
+      { allowUsers: ['user@im.wechat'], adminUsers: [], commandPrefix: '/' },
+      runner,
+      adapter,
+      silentLogger,
+    )
+    await bridge.start()
+    await adapter.emit(msg({ text: '/switch 0' }))
+    expect(runner.switches).toEqual([0])
+    expect(adapter.sent[0].text).toContain('会话 0')
+    await adapter.emit(msg({ text: '/switch 9', msgId: 'm2' }))
+    expect(adapter.sent[1].text).toContain('❌')
   })
 
   it('长回复按块发送', async () => {
