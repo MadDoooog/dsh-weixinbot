@@ -17,6 +17,7 @@ import { Bridge } from './bridge/bridge.js'
 import { AgentRunner } from './runner/agent-runner.js'
 import { StatusServer } from './server/health.js'
 import { registerNotifyTools, type ToolsHost } from './notifier/tools.js'
+import { ApprovalBridge, type ApprovalHost } from './approval/bridge.js'
 
 export const name = 'dsh-weixinbot'
 /** 需要的服务：AgentRegistry（ctx.agents）+ 默认模型选择器。 */
@@ -78,11 +79,21 @@ export function apply(ctx: Context, config: Config = {} as Config): () => Promis
     cursor: { load: () => loadCursor(home), save: (b) => saveCursor(b, home) },
     logger,
   })
+  // F12 审批桥：监听 approval/request，微信里 /approve|/reject 决策
+  const ownerUserId = (botToken && (cfg.credentials?.userId || fileCreds?.userId)) || ''
+  const approval = new ApprovalBridge(ctx as ApprovalHost, adapter, {
+    enabled: cfg.approval.enabled,
+    defaultTarget: ownerUserId,
+    timeoutMs: cfg.approval.timeoutMs,
+  }, logger)
+  approval.start()
+
   const bridge = new Bridge(
     {
       allowUsers: cfg.allowUsers,
       adminUsers: cfg.adminUsers,
       commandPrefix: cfg.commandPrefix,
+      approval,
     },
     runner,
     adapter,

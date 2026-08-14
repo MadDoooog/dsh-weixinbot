@@ -70,6 +70,11 @@ function weixinbotOverride(userId) {
     server:
       enabled: true
       port: 3901
+    notifier:
+      enabled: true
+    approval:
+      enabled: true
+      timeoutMs: 300000
     logFile: true
 `
 }

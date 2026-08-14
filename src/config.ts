@@ -51,6 +51,13 @@ export interface NotifierConfig {
   enabled: boolean
 }
 
+export interface ApprovalConfig {
+  /** 是否启用审批桥（F12）。 */
+  enabled: boolean
+  /** 等待微信决策超时（毫秒），超时 fail-closed = rejected。 */
+  timeoutMs: number
+}
+
 export interface Config {
   enabled: boolean
   /** 通道适配器：ilink-direct（内置协议）| openclaw-relay（预留）。 */
@@ -69,6 +76,8 @@ export interface Config {
   server: ServerConfig
   /** F9 主动通知工具开关。 */
   notifier: NotifierConfig
+  /** F12 审批桥。 */
+  approval: ApprovalConfig
   /** 是否写独立日志文件 $DSH_HOME/weixinbot/weixinbot.log。 */
   logFile: boolean
 }
@@ -100,6 +109,10 @@ export const DEFAULT_CONFIG: Config = {
   },
   notifier: {
     enabled: true,
+  },
+  approval: {
+    enabled: true,
+    timeoutMs: 5 * 60 * 1000,
   },
   logFile: true,
 }

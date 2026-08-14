@@ -5,6 +5,7 @@
 import { chunkText, fileLog, formatError, type Logger } from '../util.js'
 import type { ChannelAdapter, InboundMessage } from '../adapter/channel.js'
 import type { MessageRunner } from '../runner/agent-runner.js'
+import type { ApprovalHandler } from '../approval/bridge.js'
 
 export interface BridgeConfig {
   /** 单聊白名单（`xxx@im.wechat`）；空数组 = 全部拒绝（fail-closed）。 */
@@ -13,6 +14,8 @@ export interface BridgeConfig {
   adminUsers: string[]
   /** 命令前缀（/help /new /status）。 */
   commandPrefix: string
+  /** F12 审批处理器（可选）；/approve /reject 命令优先交给它。 */
+  approval?: ApprovalHandler
 }
 
 const DEDUPE_CAP = 2000
@@ -145,6 +148,15 @@ export class Bridge {
     const from = msg.fromUserId
     const isAdmin = (this.cfg.adminUsers.length > 0 ? this.cfg.adminUsers : this.cfg.allowUsers).includes(from)
     const send = (text: string) => this.adapter.send(msg.fromUserId, msg.contextToken, text)
+
+    // F12：/approve /reject 优先交给审批桥
+    if (this.cfg.approval) {
+      const reply = await this.cfg.approval.handleCommand(msg.text, msg.fromUserId)
+      if (reply !== null) {
+        await send(reply)
+        return true
+      }
+    }
 
     switch (cmd) {
       case 'help':

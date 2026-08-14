@@ -76,13 +76,23 @@ dsh web        # 或 dsh --profile <name>
 |---|---|---|
 | `/help` | 帮助 | 白名单用户 |
 | `/status` | 登录态 / 轮询 / 队列 / 收发统计 | 白名单用户 |
+| `/whoami` | 你的 ID / 管理员 / 当前会话 | 白名单用户 |
 | `/new` | **切换**到新会话（旧会话保留，可切回） | 管理员（缺省=白名单用户） |
 | `/list` | 列出本会话的所有代次（会话号） | 白名单用户 |
 | `/switch <n>` | 切回指定会话号（上下文保留） | 白名单用户 |
+| `/cancel` | 取消正在运行的任务 | 管理员 |
+| `/approve <id>` / `/reject <id>` | 审批决策（agent 请求批准时） | 白名单用户 |
 
 > 会话切换：同一微信会话内，普通消息永远复用当前会话；`/new` 开启新一代次，
 > 旧代次连同上下文完整保留，`/list` + `/switch <n>` 可随时切回。
 > 代次记录持久化在 `$DSH_HOME/weixinbot/session-map.json`。
+
+## M3 增强功能
+
+- **typing「正在输入」**：agent 回答期间微信显示输入状态（自动，失败静默降级）
+- **主动通知工具**：agent 可调用 `wechat_send` / `wechat_notify` 把消息推到你的微信（默认发给你本人）
+- **审批桥**：agent 需要批准的操作（如执行危险命令）会推送审批卡片到微信，
+  回复 `/approve <id>` 或 `/reject <id>` 即可决策；超时自动拒绝（fail-closed）
 
 ## 配置项（cordis.patch.yml `config:` 段）
 
